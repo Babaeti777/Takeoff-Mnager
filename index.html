@@ -105,6 +105,11 @@
         .slider.round { border-radius: 34px; }
         .slider.round:before { border-radius: 50%; }
         #drive-file-list button { margin: 5px; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 8px; font-weight: 600; font-size: 14px; }
+        .form-input { width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 6px;
+                      background: var(--secondary-bg); color: var(--text-dark); font-size: 14px; transition: border-color 0.2s; }
+        .form-input:focus { outline: none; border-color: var(--accent-color); }
 
     </style>
 </head>
@@ -214,17 +219,37 @@ const App = {
     gapiInited: false, gisInited: false, tokenClient: null,
 
     init: function() {
-        this.costData = typeof costDatabase !== 'undefined' ? costDatabase : {};
-        this.pdfCanvas = document.getElementById('pdf-canvas');
-        if (this.pdfCanvas) this.pdfCtx = this.pdfCanvas.getContext('2d');
-        this.drawCanvas = document.getElementById('draw-canvas');
-        if (this.drawCanvas) {
-            this.drawCtx = this.drawCanvas.getContext('2d');
-            this.drawCanvas.addEventListener('click', (e) => this.handleCanvasClick(e));
-            this.drawCanvas.addEventListener('mousemove', (e) => this.handleCanvasMouseMove(e));
-            this.drawCanvas.addEventListener('dblclick', (e) => this.handleCanvasDblClick(e));
+        try {
+            this.costData = typeof costDatabase !== 'undefined' ? costDatabase : {};
+            if (!this.costData.itemsDB || Object.keys(this.costData.itemsDB).length === 0) {
+                console.warn('Cost database is empty or not loaded properly');
+            }
+
+            this.pdfCanvas = document.getElementById('pdf-canvas');
+            if (this.pdfCanvas) {
+                this.pdfCtx = this.pdfCanvas.getContext('2d');
+                if (!this.pdfCtx) {
+                    console.error('Failed to get 2D context for PDF canvas');
+                }
+            }
+
+            this.drawCanvas = document.getElementById('draw-canvas');
+            if (this.drawCanvas) {
+                this.drawCtx = this.drawCanvas.getContext('2d');
+                if (!this.drawCtx) {
+                    console.error('Failed to get 2D context for draw canvas');
+                } else {
+                    this.drawCanvas.addEventListener('click', (e) => this.handleCanvasClick(e));
+                    this.drawCanvas.addEventListener('mousemove', (e) => this.handleCanvasMouseMove(e));
+                    this.drawCanvas.addEventListener('dblclick', (e) => this.handleCanvasDblClick(e));
+                }
+            }
+
+            this.renderDatabaseTable();
+        } catch (error) {
+            console.error('Initialization error:', error);
+            alert('An error occurred during initialization. Please refresh the page.');
         }
-        this.renderDatabaseTable();
     },
 
     // --- UI & Theme ---
@@ -239,11 +264,31 @@ const App = {
     // --- PDF & Canvas Logic ---
     loadPdf: function(event) {
         const file = event.target.files[0];
-        if (!file || file.type !== 'application/pdf') return alert('Please select a PDF file.');
+        if (!file || file.type !== 'application/pdf') {
+            alert('Please select a valid PDF file.');
+            return;
+        }
         const fileReader = new FileReader();
+        fileReader.onerror = () => {
+            console.error('Failed to read PDF file');
+            alert('Error reading PDF file. Please try again.');
+        };
         fileReader.onload = (e) => {
-            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
-            pdfjsLib.getDocument({ data: e.target.result }).promise.then(pdfDoc => { this.pdfDoc = pdfDoc; this.renderPage(this.pageNum); });
+            try {
+                pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+                pdfjsLib.getDocument({ data: e.target.result }).promise
+                    .then(pdfDoc => {
+                        this.pdfDoc = pdfDoc;
+                        this.renderPage(this.pageNum);
+                    })
+                    .catch(error => {
+                        console.error('Failed to load PDF:', error);
+                        alert('Failed to load PDF. The file may be corrupted or invalid.');
+                    });
+            } catch (error) {
+                console.error('PDF loading error:', error);
+                alert('An error occurred while loading the PDF.');
+            }
         };
         fileReader.readAsArrayBuffer(file);
     },
@@ -295,8 +340,53 @@ const App = {
         this.currentPoints = []; this.isDrawing = false;
     },
     clearDrawing: function() { this.drawCtx.clearRect(0, 0, this.drawCanvas.width, this.drawCanvas.height); },
-    drawCurrentTakeoff: function(mousePos = null) { this.clearDrawing(); /* ... full drawing logic ... */ },
-    drawCount: function(x, y) { /* ... full drawing logic ... */ },
+    drawCurrentTakeoff: function(mousePos = null) {
+        this.clearDrawing();
+        if (this.currentPoints.length === 0) return;
+
+        this.drawCtx.strokeStyle = this.takeoffMode === 'linear' ? this.getComputedStyle('--takeoff-linear-color', '#ffc107') : this.getComputedStyle('--takeoff-area-color', '#198754');
+        this.drawCtx.lineWidth = 2;
+        this.drawCtx.fillStyle = this.takeoffMode === 'area' ? 'rgba(25, 135, 84, 0.2)' : 'transparent';
+
+        this.drawCtx.beginPath();
+        this.drawCtx.moveTo(this.currentPoints[0].x, this.currentPoints[0].y);
+        for (let i = 1; i < this.currentPoints.length; i++) {
+            this.drawCtx.lineTo(this.currentPoints[i].x, this.currentPoints[i].y);
+        }
+        if (mousePos) this.drawCtx.lineTo(mousePos.x, mousePos.y);
+        if (this.takeoffMode === 'area' && this.currentPoints.length > 2) {
+            this.drawCtx.closePath();
+            this.drawCtx.fill();
+        }
+        this.drawCtx.stroke();
+
+        this.currentPoints.forEach(point => {
+            this.drawCtx.fillStyle = '#ffffff';
+            this.drawCtx.beginPath();
+            this.drawCtx.arc(point.x, point.y, 4, 0, 2 * Math.PI);
+            this.drawCtx.fill();
+        });
+    },
+    drawCount: function(x, y) {
+        const countNumber = document.querySelectorAll('#takeoff-log-items .log-item').length + 1;
+        this.drawCtx.fillStyle = this.getComputedStyle('--takeoff-count-color', '#dc3545');
+        this.drawCtx.beginPath();
+        this.drawCtx.arc(x, y, 15, 0, 2 * Math.PI);
+        this.drawCtx.fill();
+        this.drawCtx.fillStyle = '#ffffff';
+        this.drawCtx.font = 'bold 14px Arial';
+        this.drawCtx.textAlign = 'center';
+        this.drawCtx.textBaseline = 'middle';
+        this.drawCtx.fillText(countNumber, x, y);
+    },
+    getComputedStyle: function(varName, defaultValue) {
+        return getComputedStyle(document.documentElement).getPropertyValue(varName).trim() || defaultValue;
+    },
+    escapeHtml: function(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    },
 
     // --- Log, Database, & Estimate Linking ---
     logTakeoff: function(desc, qty, unit) {
@@ -306,7 +396,25 @@ const App = {
         logItem.className = 'log-item';
         const icon = this.takeoffMode === 'linear' ? 'fa-ruler-horizontal' : this.takeoffMode === 'area' ? 'fa-vector-square' : 'fa-list-ol';
         const iconColor = this.takeoffMode === 'linear' ? '#ffc107' : this.takeoffMode === 'area' ? '#198754' : '#dc3545';
-        logItem.innerHTML = `<div class="desc"><i class="fas ${icon}" style="color:${iconColor}"></i> ${desc}</div><div class="qty">${qty.toFixed(2)} ${unit}</div><button title="Send to Estimate" class="btn" style="padding: 5px 10px;" onclick="App.prepareToSendToEstimate(${qty},'${unit}')"><i class="fas fa-arrow-right"></i></button>`;
+
+        const descDiv = document.createElement('div');
+        descDiv.className = 'desc';
+        descDiv.innerHTML = `<i class="fas ${icon}" style="color:${iconColor}"></i> ${this.escapeHtml(desc)}`;
+
+        const qtyDiv = document.createElement('div');
+        qtyDiv.className = 'qty';
+        qtyDiv.textContent = `${qty.toFixed(2)} ${unit}`;
+
+        const btn = document.createElement('button');
+        btn.className = 'btn';
+        btn.title = 'Send to Estimate';
+        btn.style.cssText = 'padding: 5px 10px;';
+        btn.innerHTML = '<i class="fas fa-arrow-right"></i>';
+        btn.onclick = () => this.prepareToSendToEstimate(qty, unit);
+
+        logItem.appendChild(descDiv);
+        logItem.appendChild(qtyDiv);
+        logItem.appendChild(btn);
         logContainer.prepend(logItem);
     },
     prepareToSendToEstimate: function(qty, unit) {
@@ -332,7 +440,37 @@ const App = {
         const tbody = document.getElementById('estimate-tbody');
         const newRow = tbody.insertRow();
         const total = item.price * qty;
-        newRow.innerHTML = `<td>${item.division}</td><td>${item.name}</td><td><input type="number" value="${qty.toFixed(2)}" class="form-input qty-input" onchange="App.updateRowCost(this)" style="width:100px;padding:5px;"></td><td>${item.unit}</td><td data-price="${item.price}">${item.price.toFixed(2)}</td><td class="total-cost-cell">${total.toFixed(2)}</td><td><button class="btn btn-danger" style="padding: 5px 10px;" onclick="App.removeEstimateRow(this)"><i class="fas fa-trash"></i></button></td>`;
+
+        newRow.insertCell().textContent = item.division;
+        newRow.insertCell().textContent = item.name;
+
+        const qtyCell = newRow.insertCell();
+        const qtyInput = document.createElement('input');
+        qtyInput.type = 'number';
+        qtyInput.value = qty.toFixed(2);
+        qtyInput.className = 'form-input qty-input';
+        qtyInput.style.cssText = 'width:100px;padding:5px;';
+        qtyInput.onchange = () => this.updateRowCost(qtyInput);
+        qtyCell.appendChild(qtyInput);
+
+        newRow.insertCell().textContent = item.unit;
+
+        const priceCell = newRow.insertCell();
+        priceCell.dataset.price = item.price;
+        priceCell.textContent = item.price.toFixed(2);
+
+        const totalCell = newRow.insertCell();
+        totalCell.className = 'total-cost-cell';
+        totalCell.textContent = total.toFixed(2);
+
+        const actionCell = newRow.insertCell();
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'btn btn-danger';
+        deleteBtn.style.cssText = 'padding: 5px 10px;';
+        deleteBtn.innerHTML = '<i class="fas fa-trash"></i>';
+        deleteBtn.onclick = () => this.removeEstimateRow(deleteBtn);
+        actionCell.appendChild(deleteBtn);
+
         this.updateEstimateTotal();
         this.navigateToTab('estimate');
         if (this.pendingTakeoff) {
@@ -363,7 +501,18 @@ const App = {
             this.costData.itemsDB[division].forEach(item => {
                 if (item.name.toLowerCase().includes(searchTerm)) {
                      const row = tbody.insertRow();
-                     row.innerHTML = `<td>${division}</td><td>${item.name}</td><td>${item.unit}</td><td>$${item.price.toFixed(2)}</td><td><button class="btn" style="padding: 5px 10px;" onclick="App.addCopyToEstimate('${item.name}')">Add</button></td>`;
+                     row.insertCell().textContent = division;
+                     row.insertCell().textContent = item.name;
+                     row.insertCell().textContent = item.unit;
+                     row.insertCell().textContent = `$${item.price.toFixed(2)}`;
+
+                     const actionCell = row.insertCell();
+                     const addBtn = document.createElement('button');
+                     addBtn.className = 'btn';
+                     addBtn.style.cssText = 'padding: 5px 10px;';
+                     addBtn.textContent = 'Add';
+                     addBtn.onclick = () => this.addCopyToEstimate(item.name);
+                     actionCell.appendChild(addBtn);
                 }
             });
         }
@@ -372,13 +521,30 @@ const App = {
     // --- Google Drive Integration ---
     gapiLoaded: function() { gapi.load('client', this.initializeGapiClient.bind(this)); },
     gisLoaded: function() {
+        if (this.CLIENT_ID.startsWith('PASTE_')) {
+            console.warn("Client ID not set. Google Drive features will be disabled.");
+            this.gisInited = false;
+            return;
+        }
         this.tokenClient = google.accounts.oauth2.initTokenClient({
             client_id: this.CLIENT_ID, scope: this.SCOPES,
             callback: (resp) => {
-                if (resp.error) throw(resp);
+                if (resp.error) {
+                    console.error('Auth error:', resp);
+                    alert('Authentication failed: ' + resp.error);
+                    return;
+                }
                 document.getElementById('authorize_button').style.display = 'none';
                 document.getElementById('signout_button').style.display = 'block';
-                gapi.client.oauth2.userinfo.get().then(response => { document.getElementById('auth-user').textContent = `Welcome, ${response.result.name}`; });
+                // Get user info using the proper API
+                fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+                    headers: { Authorization: `Bearer ${gapi.client.getToken().access_token}` }
+                })
+                .then(response => response.json())
+                .then(userInfo => {
+                    document.getElementById('auth-user').textContent = `Welcome, ${userInfo.name}`;
+                })
+                .catch(err => console.error('Failed to get user info:', err));
             },
         });
         this.gisInited = true;
@@ -399,8 +565,15 @@ const App = {
         this.gapiInited = true;
     },
     handleAuthClick: function() {
-        if (this.gisInited && this.tokenClient) {
+        if (!this.gisInited || !this.tokenClient) {
+            alert('Google authentication is not properly configured. Please check the API credentials.');
+            return;
+        }
+        try {
             this.tokenClient.requestAccessToken({ prompt: 'consent' });
+        } catch (error) {
+            console.error('Authentication error:', error);
+            alert('Failed to initiate authentication. Please try again.');
         }
     },
     handleSignoutClick: function() {
@@ -474,7 +647,36 @@ const App = {
                     if (itemDetails) {
                         const newRow = tbody.insertRow();
                         const total = itemData.price * itemData.qty;
-                        newRow.innerHTML = `<td>${itemDetails.division}</td><td>${itemDetails.name}</td><td><input type="number" value="${parseFloat(itemData.qty).toFixed(2)}" class="form-input qty-input" onchange="App.updateRowCost(this)" style="width:100px;padding:5px;"></td><td>${itemDetails.unit}</td><td data-price="${itemDetails.price}">${itemDetails.price.toFixed(2)}</td><td class="total-cost-cell">${total.toFixed(2)}</td><td><button class="btn btn-danger" style="padding: 5px 10px;" onclick="App.removeEstimateRow(this)"><i class="fas fa-trash"></i></button></td>`;
+
+                        newRow.insertCell().textContent = itemDetails.division;
+                        newRow.insertCell().textContent = itemDetails.name;
+
+                        const qtyCell = newRow.insertCell();
+                        const qtyInput = document.createElement('input');
+                        qtyInput.type = 'number';
+                        qtyInput.value = parseFloat(itemData.qty).toFixed(2);
+                        qtyInput.className = 'form-input qty-input';
+                        qtyInput.style.cssText = 'width:100px;padding:5px;';
+                        qtyInput.onchange = () => this.updateRowCost(qtyInput);
+                        qtyCell.appendChild(qtyInput);
+
+                        newRow.insertCell().textContent = itemDetails.unit;
+
+                        const priceCell = newRow.insertCell();
+                        priceCell.dataset.price = itemDetails.price;
+                        priceCell.textContent = itemDetails.price.toFixed(2);
+
+                        const totalCell = newRow.insertCell();
+                        totalCell.className = 'total-cost-cell';
+                        totalCell.textContent = total.toFixed(2);
+
+                        const actionCell = newRow.insertCell();
+                        const deleteBtn = document.createElement('button');
+                        deleteBtn.className = 'btn btn-danger';
+                        deleteBtn.style.cssText = 'padding: 5px 10px;';
+                        deleteBtn.innerHTML = '<i class="fas fa-trash"></i>';
+                        deleteBtn.onclick = () => this.removeEstimateRow(deleteBtn);
+                        actionCell.appendChild(deleteBtn);
                     }
                 });
             }
